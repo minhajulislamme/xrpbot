@@ -7,6 +7,12 @@ import os
 from pathlib import Path
 from tqdm import tqdm
 import json
+import warnings
+
+# Suppress specific NumPy warnings that occur in the TA library
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in scalar divide")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in divide")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in true_divide")
 
 from modules.config import (
     BACKTEST_INITIAL_BALANCE, BACKTEST_COMMISSION, RISK_PER_TRADE,

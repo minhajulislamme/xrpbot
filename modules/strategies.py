@@ -2,6 +2,7 @@ import logging
 import numpy as np
 import pandas as pd
 import ta
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -872,6 +873,1143 @@ class SHIBBreakoutStrategy(TradingStrategy):
         return None
 
 
+class XRPFuturesGridStrategy(TradingStrategy):
+    """Advanced Futures Grid strategy optimized for XRP's volatility with dynamic parameter adjustment"""
+    def __init__(self):
+        super().__init__('XRP_FuturesGrid')
+        # Default parameters - will be dynamically adjusted
+        self.grid_levels = 20
+        self.grid_step_percent = 0.5
+        self.bb_period = 20
+        self.bb_std = 2.0
+        self.ichimoku_fast = 9
+        self.ichimoku_medium = 26
+        self.ichimoku_slow = 52
+        self.rsi_period = 14
+        self.rsi_overbought = 70
+        self.rsi_oversold = 30
+        self.macd_fast = 12
+        self.macd_slow = 26
+        self.macd_signal = 9
+        
+        # Parameters for dynamic adjustment
+        self.volatility_lookback = 20
+        self.regime_lookback = 50
+        self.last_adjustment_time = 0
+        self.adjustment_interval = 12  # Hours between parameter recalibrations
+        self.min_grid_levels = 10
+        self.max_grid_levels = 40
+        self.min_grid_step = 0.25
+        self.max_grid_step = 1.5
+        
+    def detect_market_regime(self, df):
+        """Detect if the market is trending, ranging, or volatile"""
+        # Ensure we have enough data to calculate indicators
+        if len(df) < max(30, self.regime_lookback):
+            # Default to ranging market if not enough data
+            return {
+                'volatile': False,
+                'trending': False,
+                'ranging': True,
+                'volatility': 2.0,
+                'trend_strength': 15,
+                'trend_direction': 0,
+                'price_trend': 0
+            }
+        
+        # Calculate volatility metrics
+        df['daily_range'] = (df['high'] - df['low']) / df['low'] * 100
+        
+        # Calculate directional movement
+        df['close_change'] = df['close'].pct_change()
+        df['direction'] = df['close_change'].apply(lambda x: 1 if x > 0 else -1 if x < 0 else 0)
+        df['direction_change'] = df['direction'].diff().abs()
+        
+        # Get recent metrics - safely
+        lookback = min(self.volatility_lookback, len(df)-1)
+        regime_lookback = min(self.regime_lookback, len(df)-1)
+        
+        recent_volatility = df['daily_range'].tail(lookback).mean()
+        recent_direction_changes = df['direction_change'].tail(regime_lookback).sum()
+        
+        # Safe calculation of price trend
+        if regime_lookback > 0:
+            price_trend = (df['close'].iloc[-1] - df['close'].iloc[-regime_lookback]) / df['close'].iloc[-regime_lookback] * 100
+        else:
+            price_trend = 0
+        
+        # Calculate trend strength using ADX safely
+        try:
+            adx_window = min(14, len(df)//2)
+            if adx_window < 2:
+                adx_window = 2
+                
+            adx_indicator = ta.trend.ADXIndicator(
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                window=adx_window
+            )
+            
+            # Handle potential NaN or division by zero issues in ADX calculation
+            adx_value = adx_indicator.adx()
+            if adx_value.iloc[-1] != adx_value.iloc[-1]:  # Check for NaN (NaN != NaN)
+                adx = 15  # Default value if NaN
+            else:
+                adx = adx_value.iloc[-1]
+                
+        except Exception as e:
+            logger.warning(f"Error calculating ADX: {e}")
+            adx = 15  # Default value if calculation fails
+        
+        # Determine market regime
+        is_volatile = recent_volatility > 3.0  # 3% average daily range
+        is_trending = abs(price_trend) > 10 and adx > 25  # 10% move and ADX > 25
+        is_ranging = recent_direction_changes > (regime_lookback * 0.4) and not is_trending
+        
+        return {
+            'volatile': is_volatile,
+            'trending': is_trending,
+            'ranging': is_ranging,
+            'volatility': recent_volatility,
+            'trend_strength': adx,
+            'trend_direction': 1 if price_trend > 0 else -1 if price_trend < 0 else 0,
+            'price_trend': price_trend
+        }
+    
+    def adjust_parameters(self, df, regime):
+        """Dynamically adjust strategy parameters based on market conditions"""
+        current_time = time.time()
+        # Only adjust every adjustment_interval hours to avoid constant changes
+        if current_time - self.last_adjustment_time < self.adjustment_interval * 3600:
+            return
+            
+        # Adjust grid parameters based on volatility
+        if regime['volatile']:
+            # More grid levels with wider spacing in volatile markets
+            self.grid_levels = min(int(20 * (1 + regime['volatility'] / 10)), self.max_grid_levels)
+            self.grid_step_percent = min(self.max_grid_step, 0.5 * (1 + regime['volatility'] / 5))
+            
+            # Adjust Bollinger Bands for volatile markets
+            self.bb_std = 2.5
+            self.bb_period = 15  # Faster response in volatile markets
+            
+            # Adjust Ichimoku for faster signals
+            self.ichimoku_fast = 7
+            self.ichimoku_medium = 22
+            
+            # Widen RSI thresholds in volatile markets
+            self.rsi_overbought = 75
+            self.rsi_oversold = 25
+            
+            logger.info(f"XRP Strategy: Adjusted for volatile market. Grid levels={self.grid_levels}, step={self.grid_step_percent:.2f}%")
+            
+        elif regime['trending']:
+            # Fewer grid levels with narrower spacing in trending markets
+            trend_direction = regime['trend_direction']
+            
+            # Adjust based on trend direction
+            if trend_direction > 0:  # Uptrend
+                # In uptrend, set more grid levels above current price
+                self.grid_levels = int(15 * (1 + regime['trend_strength'] / 30))
+                self.grid_step_percent = 0.4 * (1 + regime['trend_strength'] / 40)
+                
+                # Adjust RSI for uptrend (avoid selling too early)
+                self.rsi_overbought = 80
+                self.rsi_oversold = 40
+                
+            else:  # Downtrend
+                # In downtrend, set more grid levels below current price
+                self.grid_levels = int(15 * (1 + regime['trend_strength'] / 30))
+                self.grid_step_percent = 0.4 * (1 + regime['trend_strength'] / 40)
+                
+                # Adjust RSI for downtrend (avoid buying too early)
+                self.rsi_overbought = 60
+                self.rsi_oversold = 20
+            
+            # Adjust MACD for trend following
+            self.macd_fast = 8
+            self.macd_slow = 21
+            
+            logger.info(f"XRP Strategy: Adjusted for trending market ({regime['trend_direction']}). Grid levels={self.grid_levels}, step={self.grid_step_percent:.2f}%")
+            
+        elif regime['ranging']:
+            # More grid levels with narrower spacing in ranging markets
+            self.grid_levels = 30  # Maximum grid density for ranging markets
+            self.grid_step_percent = self.min_grid_step
+            
+            # Adjust Bollinger Bands for ranging markets
+            self.bb_std = 1.8
+            self.bb_period = 20
+            
+            # Standard RSI values work well in ranging markets
+            self.rsi_overbought = 70
+            self.rsi_oversold = 30
+            
+            logger.info(f"XRP Strategy: Adjusted for ranging market. Grid levels={self.grid_levels}, step={self.grid_step_percent:.2f}%")
+            
+        else:
+            # Default settings for normal markets
+            self.grid_levels = 20
+            self.grid_step_percent = 0.5
+            self.bb_std = 2.0
+            self.bb_period = 20
+            self.rsi_overbought = 70
+            self.rsi_oversold = 30
+            
+            logger.info("XRP Strategy: Using default parameters for normal market conditions")
+        
+        # Ensure parameters are within bounds
+        self.grid_levels = max(min(self.grid_levels, self.max_grid_levels), self.min_grid_levels)
+        self.grid_step_percent = max(min(self.grid_step_percent, self.max_grid_step), self.min_grid_step)
+        
+        # Update last adjustment time
+        self.last_adjustment_time = current_time
+        
+    def get_signal(self, klines):
+        """Get trading signal based on current market conditions"""
+        # Convert klines to dataframe
+        df = self.prepare_data(klines)
+        
+        # Check if we have enough data for indicators
+        if len(df) < 30:
+            logger.warning(f"XRP FuturesGrid: Not enough data to generate signal ({len(df)} candles)")
+            return None
+            
+        # Detect market regime
+        regime = self.detect_market_regime(df)
+        
+        # Dynamically adjust parameters based on market conditions
+        self.adjust_parameters(df, regime)
+        
+        # Calculate Bollinger Bands for dynamic grid range - safely
+        bb_period = min(self.bb_period, len(df)-1)
+        if bb_period < 2:
+            bb_period = 2
+            
+        try:
+            bb_indicator = ta.volatility.BollingerBands(
+                close=df['close'],
+                window=bb_period,
+                window_dev=self.bb_std
+            )
+            df['bb_high'] = bb_indicator.bollinger_hband()
+            df['bb_low'] = bb_indicator.bollinger_lband()
+            df['bb_mid'] = bb_indicator.bollinger_mavg()
+            df['bb_width'] = (df['bb_high'] - df['bb_low']) / df['bb_mid']
+        except Exception as e:
+            logger.warning(f"Error calculating Bollinger Bands: {e}")
+            return None
+        
+        # Calculate Ichimoku Cloud components - safely
+        try:
+            ichimoku_fast = min(self.ichimoku_fast, len(df)//2)
+            ichimoku_medium = min(self.ichimoku_medium, len(df)//2)
+            ichimoku_slow = min(self.ichimoku_slow, len(df)//2)
+            
+            if ichimoku_fast < 2: ichimoku_fast = 2
+            if ichimoku_medium < 3: ichimoku_medium = 3
+            if ichimoku_slow < 5: ichimoku_slow = 5
+            
+            df['tenkan_sen'] = self._calculate_ichimoku_line(df, ichimoku_fast)
+            df['kijun_sen'] = self._calculate_ichimoku_line(df, ichimoku_medium)
+            df['senkou_span_a'] = (df['tenkan_sen'] + df['kijun_sen']) / 2
+            df['senkou_span_b'] = self._calculate_ichimoku_line(df, ichimoku_slow)
+        except Exception as e:
+            logger.warning(f"Error calculating Ichimoku: {e}")
+            return None
+        
+        # Calculate MACD - safely
+        try:
+            macd_fast = min(self.macd_fast, len(df)//2)
+            macd_slow = min(self.macd_slow, len(df)//2)
+            macd_signal = min(self.macd_signal, len(df)//2)
+            
+            if macd_fast < 2: macd_fast = 2
+            if macd_slow < 3: macd_slow = 3
+            if macd_signal < 2: macd_signal = 2
+            
+            # Ensure slow is greater than fast
+            if macd_slow <= macd_fast:
+                macd_slow = macd_fast + 1
+                
+            macd = ta.trend.MACD(
+                close=df['close'],
+                window_fast=macd_fast,
+                window_slow=macd_slow,
+                window_sign=macd_signal
+            )
+            df['macd'] = macd.macd()
+            df['macd_signal'] = macd.macd_signal()
+            df['macd_hist'] = macd.macd_diff()
+        except Exception as e:
+            logger.warning(f"Error calculating MACD: {e}")
+            return None
+        
+        # Calculate RSI for trend direction - safely
+        try:
+            rsi_period = min(self.rsi_period, len(df)//2)
+            if rsi_period < 2: rsi_period = 2
+            
+            df['rsi'] = ta.momentum.RSIIndicator(
+                close=df['close'], 
+                window=rsi_period
+            ).rsi()
+        except Exception as e:
+            logger.warning(f"Error calculating RSI: {e}")
+            return None
+        
+        # Calculate ADX for trend strength - safely
+        try:
+            adx_period = min(14, len(df)//2)
+            if adx_period < 2: adx_period = 2
+            
+            # Wrap the ADX calculation in try-except to handle divide by zero warnings
+            with np.errstate(divide='ignore', invalid='ignore'):
+                adx = ta.trend.ADXIndicator(
+                    high=df['high'],
+                    low=df['low'],
+                    close=df['close'],
+                    window=adx_period
+                )
+                df['adx'] = adx.adx()
+                df['adx_pos'] = adx.adx_pos()
+                df['adx_neg'] = adx.adx_neg()
+                
+                # Replace any NaN or infinity values
+                df['adx'] = df['adx'].replace([np.inf, -np.inf], np.nan).fillna(15)
+                df['adx_pos'] = df['adx_pos'].replace([np.inf, -np.inf], np.nan).fillna(20)
+                df['adx_neg'] = df['adx_neg'].replace([np.inf, -np.inf], np.nan).fillna(20)
+        except Exception as e:
+            logger.warning(f"Error calculating ADX: {e}")
+            df['adx'] = 15  # Default value if calculation fails
+            df['adx_pos'] = 20
+            df['adx_neg'] = 20
+        
+        # Ensure we have at least 2 rows of valid data that aren't NaN
+        if len(df) < 2 or df['bb_high'].iloc[-1] != df['bb_high'].iloc[-1] or df['macd'].iloc[-1] != df['macd'].iloc[-1] or df['rsi'].iloc[-1] != df['rsi'].iloc[-1]:
+            logger.warning("XRP FuturesGrid: Some indicators returned NaN values, skipping signal generation")
+            return None
+            
+        # Check for any remaining NaN in key indicators
+        key_indicators = ['bb_high', 'bb_low', 'macd', 'macd_signal', 'rsi', 'tenkan_sen', 'kijun_sen']
+        for indicator in key_indicators:
+            if df[indicator].iloc[-1] != df[indicator].iloc[-1]:  # Check for NaN (NaN != NaN)
+                logger.warning(f"XRP FuturesGrid: NaN value in {indicator}, skipping signal generation")
+                return None
+        
+        # Current values
+        try:
+            current_price = df['close'].iloc[-1]
+            current_bb_high = df['bb_high'].iloc[-1]
+            current_bb_low = df['bb_low'].iloc[-1]
+            current_bb_mid = df['bb_mid'].iloc[-1]
+            current_tenkan = df['tenkan_sen'].iloc[-1]
+            current_kijun = df['kijun_sen'].iloc[-1]
+            current_senkou_a = df['senkou_span_a'].iloc[-1]
+            current_senkou_b = df['senkou_span_b'].iloc[-1]
+            current_rsi = df['rsi'].iloc[-1]
+            current_macd = df['macd'].iloc[-1]
+            current_macd_signal = df['macd_signal'].iloc[-1]
+            current_macd_hist = df['macd_hist'].iloc[-1]
+            current_adx = df['adx'].iloc[-1]
+            
+            # Previous values
+            prev_price = df['close'].iloc[-2]
+            prev_tenkan = df['tenkan_sen'].iloc[-2]
+            prev_kijun = df['kijun_sen'].iloc[-2]
+            prev_macd = df['macd'].iloc[-2]
+            prev_macd_signal = df['macd_signal'].iloc[-2]
+            prev_macd_hist = df['macd_hist'].iloc[-2]
+            prev_rsi = df['rsi'].iloc[-2]
+        except Exception as e:
+            logger.warning(f"Error accessing indicator values: {e}")
+            return None
+        
+        # Calculate dynamic grid based on volatility and market regime
+        grid_range = current_bb_high - current_bb_low
+        grid_step = grid_range / max(self.grid_levels, 1)  # Avoid division by zero
+        
+        # Market condition assessment
+        cloud_bullish = current_senkou_a > current_senkou_b
+        price_above_cloud = current_price > max(current_senkou_a, current_senkou_b)
+        price_below_cloud = current_price < min(current_senkou_a, current_senkou_b)
+        is_strong_trend = current_adx > 25
+        
+        # Signal logic for XRP futures grid - dynamically adjusted based on market regime
+        buy_signal = False
+        sell_signal = False
+        reason = ""
+        
+        # Dynamically adjust entry/exit conditions based on market regime
+        if regime['trending']:
+            if regime['trend_direction'] > 0:  # Uptrend
+                # BUY conditions for uptrend - focus on pullbacks
+                if (current_price <= current_bb_mid and
+                    current_rsi > prev_rsi and current_rsi < 60 and
+                    current_price > current_tenkan and
+                    cloud_bullish):
+                    buy_signal = True
+                    reason = "Bullish trend pullback to midband"
+                
+                # SELL conditions for uptrend - focus on overbought conditions
+                if (current_price >= current_bb_high and
+                    current_rsi > self.rsi_overbought and
+                    current_rsi < prev_rsi and
+                    current_macd < current_macd_signal):
+                    sell_signal = True
+                    reason = "Overbought reversal in uptrend"
+                    
+            else:  # Downtrend
+                # BUY conditions for downtrend - only on strong reversal signals
+                if (current_price < current_bb_low and
+                    current_rsi < self.rsi_oversold and
+                    current_rsi > prev_rsi and
+                    current_macd > prev_macd and
+                    current_macd > current_macd_signal):
+                    buy_signal = True
+                    reason = "Potential trend reversal from oversold"
+                
+                # SELL conditions for downtrend - sell rallies
+                if (current_price > current_bb_mid and
+                    current_price < prev_price and
+                    current_macd < current_macd_signal):
+                    sell_signal = True
+                    reason = "Selling rally in downtrend"
+        
+        elif regime['ranging']:
+            # BUY conditions for ranging market - focus on grid levels
+            if (current_price <= current_bb_low * 1.01):  # Price near lower BB
+                if (current_rsi < 40 and current_rsi > prev_rsi):
+                    buy_signal = True
+                    reason = "Range trading buy at support"
+            
+            # SELL conditions for ranging market
+            if (current_price >= current_bb_high * 0.99):  # Price near upper BB
+                if (current_rsi > 60 and current_rsi < prev_rsi):
+                    sell_signal = True
+                    reason = "Range trading sell at resistance"
+        
+        elif regime['volatile']:
+            # BUY conditions for volatile market - more conservative
+            if (current_tenkan > current_kijun and prev_tenkan <= prev_kijun):  # TK Cross
+                if (current_macd > current_macd_signal and 
+                    current_macd_hist > prev_macd_hist and
+                    current_price > current_bb_mid):
+                    buy_signal = True
+                    reason = "Volatile market bullish TK cross with momentum"
+            
+            # SELL conditions for volatile market - capture quick profits
+            if (current_tenkan < current_kijun and prev_tenkan >= prev_kijun):  # TK Cross
+                if (current_macd < current_macd_signal and 
+                    current_macd_hist < prev_macd_hist and
+                    current_price < current_bb_mid):
+                    sell_signal = True
+                    reason = "Volatile market bearish TK cross with momentum"
+        
+        else:
+            # Default BUY conditions for normal market
+            # Condition 1: Price at lower grid with bullish indicators
+            if (current_price <= (current_bb_low + grid_step)):
+                if (current_rsi < self.rsi_oversold and current_rsi > prev_rsi):
+                    if (cloud_bullish or current_macd > current_macd_signal):
+                        buy_signal = True
+                        reason = "Grid buy at support with bullish confirmation"
+            
+            # Condition 2: Ichimoku TK cross in bullish market
+            elif (current_tenkan > current_kijun and prev_tenkan <= prev_kijun):
+                if price_above_cloud or (cloud_bullish and current_price > current_bb_mid):
+                    if current_macd_hist > 0 and current_macd_hist > prev_macd_hist:
+                        buy_signal = True
+                        reason = "Bullish TK cross with MACD confirmation"
+            
+            # Default SELL conditions for normal market
+            # Condition 1: Price at upper grid with bearish indicators
+            if (current_price >= (current_bb_high - grid_step)):
+                if (current_rsi > self.rsi_overbought and current_rsi < prev_rsi):
+                    if (not cloud_bullish or current_macd < current_macd_signal):
+                        sell_signal = True
+                        reason = "Grid sell at resistance with bearish confirmation"
+            
+            # Condition 2: Ichimoku TK cross in bearish market
+            elif (current_tenkan < current_kijun and prev_tenkan >= prev_kijun):
+                if price_below_cloud or (not cloud_bullish and current_price < current_bb_mid):
+                    if current_macd_hist < 0 and current_macd_hist < prev_macd_hist:
+                        sell_signal = True
+                        reason = "Bearish TK cross with MACD confirmation"
+        
+        # Generate signals
+        if buy_signal:
+            logger.info(f"XRP FuturesGrid: BUY signal - {reason} [Regime: {'Trending' if regime['trending'] else 'Ranging' if regime['ranging'] else 'Volatile' if regime['volatile'] else 'Normal'}]")
+            return "BUY"
+        elif sell_signal:
+            logger.info(f"XRP FuturesGrid: SELL signal - {reason} [Regime: {'Trending' if regime['trending'] else 'Ranging' if regime['ranging'] else 'Volatile' if regime['volatile'] else 'Normal'}]")
+            return "SELL"
+            
+        return None
+    
+    def _calculate_ichimoku_line(self, df, period):
+        """Helper method to calculate Ichimoku lines with safety checks"""
+        if len(df) < period:
+            # Return a series of the same length as df but filled with the middle of min/max price
+            mid_price = (df['high'].mean() + df['low'].mean()) / 2
+            return pd.Series([mid_price] * len(df), index=df.index)
+            
+        # Safe calculation with fallback
+        try:
+            high_period = df['high'].rolling(window=period).max()
+            low_period = df['low'].rolling(window=period).min()
+            result = (high_period + low_period) / 2
+            
+            # Fill NaN values with rolling average of price
+            if result.isna().any():
+                mid_price = (df['high'] + df['low']) / 2
+                result = result.fillna(mid_price.rolling(window=max(2, period//2)).mean())
+            
+            return result
+        except Exception as e:
+            logger.warning(f"Error in _calculate_ichimoku_line: {e}")
+            # Fallback to simple moving average
+            return df['close'].rolling(window=max(2, period)).mean().fillna(df['close'])
+
+
+class SOLFuturesGridStrategy(TradingStrategy):
+    """Advanced Futures Grid strategy for SOL with volatility-adjusted levels and dynamic parameter optimization"""
+    def __init__(self):
+        super().__init__('SOL_FuturesGrid')
+        # Default parameters - will be dynamically adjusted
+        self.grid_levels = 15
+        self.grid_step_percent = 0.65
+        self.vwap_window = 14
+        self.atr_period = 14
+        self.bb_period = 20
+        self.bb_std = 2.0
+        self.rsi_period = 14
+        self.rsi_overbought = 70
+        self.rsi_oversold = 30
+        self.stoch_k = 14
+        self.stoch_d = 3
+        self.ema_short = 5
+        self.ema_medium = 21
+        self.ema_long = 55
+        
+        # Parameters for dynamic adjustment
+        self.volatility_lookback = 20
+        self.regime_lookback = 50
+        self.last_adjustment_time = 0
+        self.adjustment_interval = 12  # Hours between parameter recalibrations
+        self.min_grid_levels = 8
+        self.max_grid_levels = 30
+        self.min_grid_step = 0.3
+        self.max_grid_step = 2.0
+        
+        # Parameters for auto-optimization
+        self.optimization_counter = 0
+        self.optimization_interval = 168  # Hours (1 week)
+        self.trade_results = {
+            'wins': 0,
+            'losses': 0,
+            'profit': 0,
+            'drawdown': 0
+        }
+        
+    def detect_market_condition(self, df):
+        """Detect current market condition for SOL"""
+        # Safety check to ensure we have enough data
+        if len(df) < max(30, self.volatility_lookback):
+            # Default market condition for insufficient data
+            return {
+                'volatile': False,
+                'trending': False,
+                'ranging': True,  # Default to ranging
+                'trend_direction': 0,
+                'supertrend_direction': 1,
+                'volatility': 3.0,
+                'adx': 15,
+                'price_change': 0,
+                'volume_change': 0
+            }
+        
+        # Calculate volatility metrics safely
+        try:
+            atr_period = min(self.atr_period, len(df)//2)
+            if atr_period < 2: atr_period = 2
+            
+            df['atr'] = ta.volatility.AverageTrueRange(
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                window=atr_period
+            ).average_true_range()
+            
+            df['atr_pct'] = (df['atr'] / df['close']) * 100
+        except Exception as e:
+            logger.warning(f"Error calculating ATR: {e}")
+            # Create default values
+            df['atr'] = df['close'] * 0.01  # 1% of price as default
+            df['atr_pct'] = 1.0  # Default 1% volatility
+        
+        # Calculate momentum metrics - safe periods
+        try:
+            lookback = min(5, len(df)-1)
+            df['close_change'] = df['close'].pct_change(periods=lookback) * 100
+            df['volume_change'] = df['volume'].pct_change(periods=lookback) * 100
+        except Exception as e:
+            logger.warning(f"Error calculating momentum metrics: {e}")
+            df['close_change'] = 0
+            df['volume_change'] = 0
+        
+        # Initialize direction array with defaults
+        df['direction'] = 1
+        
+        # Calculate trend metrics with Supertrend - only if enough data
+        if len(df) > self.atr_period * 2:
+            try:
+                atr_multiplier = 3.0
+                df['basic_upperband'] = (df['high'] + df['low']) / 2 + atr_multiplier * df['atr']
+                df['basic_lowerband'] = (df['high'] + df['low']) / 2 - atr_multiplier * df['atr']
+                
+                # Initialize Supertrend columns
+                df['supertrend'] = 0
+                df['direction'] = 1
+                
+                # Calculate Supertrend
+                for i in range(1, len(df)):
+                    if df['close'].iloc[i] > df['basic_upperband'].iloc[i-1]:
+                        df.loc[df.index[i], 'direction'] = 1
+                    elif df['close'].iloc[i] < df['basic_lowerband'].iloc[i-1]:
+                        df.loc[df.index[i], 'direction'] = -1
+                    else:
+                        df.loc[df.index[i], 'direction'] = df['direction'].iloc[i-1]
+                        
+                        if (df['direction'].iloc[i] == 1 and 
+                            df['basic_lowerband'].iloc[i] < df['basic_lowerband'].iloc[i-1]):
+                            df.loc[df.index[i], 'basic_lowerband'] = df['basic_lowerband'].iloc[i-1]
+                            
+                        if (df['direction'].iloc[i] == -1 and 
+                            df['basic_upperband'].iloc[i] > df['basic_upperband'].iloc[i-1]):
+                            df.loc[df.index[i], 'basic_upperband'] = df['basic_upperband'].iloc[i-1]
+                            
+                    if df['direction'].iloc[i] == 1:
+                        df.loc[df.index[i], 'supertrend'] = df['basic_lowerband'].iloc[i]
+                    else:
+                        df.loc[df.index[i], 'supertrend'] = df['basic_upperband'].iloc[i]
+            except Exception as e:
+                logger.warning(f"Error calculating Supertrend: {e}")
+                # Keep the default direction array
+                
+        # Calculate safe lookback periods
+        lookback = min(self.volatility_lookback, len(df)-1)
+        regime_lookback = min(self.regime_lookback, len(df)-1)
+        
+        # Get recent metrics - safely
+        try:
+            recent_volatility = df['atr_pct'].tail(lookback).mean()
+            recent_volume_change = df['volume_change'].tail(lookback).mean()
+        except Exception as e:
+            logger.warning(f"Error calculating recent metrics: {e}")
+            recent_volatility = 3.0  # Default value
+            recent_volume_change = 0
+        
+        # Safe calculation of price change
+        try:
+            if regime_lookback > 0 and len(df) > regime_lookback:
+                price_change = (df['close'].iloc[-1] / df['close'].iloc[-regime_lookback] - 1) * 100
+            else:
+                price_change = 0
+        except Exception as e:
+            logger.warning(f"Error calculating price change: {e}")
+            price_change = 0
+        
+        # Calculate trend strength using ADX safely
+        try:
+            adx_period = min(14, len(df)//2)
+            if adx_period < 2: adx_period = 2
+            
+            adx_indicator = ta.trend.ADXIndicator(
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                window=adx_period
+            )
+            
+            # Handle potential NaN or division by zero issues in ADX calculation
+            adx_value = adx_indicator.adx()
+            if adx_value.iloc[-1] != adx_value.iloc[-1]:  # Check for NaN (NaN != NaN)
+                adx = 15  # Default value if NaN
+            else:
+                adx = adx_value.iloc[-1]
+        except Exception as e:
+            logger.warning(f"Error calculating ADX: {e}")
+            adx = 15  # Default value if calculation fails
+        
+        # Calculate average directional change
+        try:
+            df['direction_change'] = df['direction'].diff().abs()
+            avg_direction_change = df['direction_change'].tail(regime_lookback).mean()
+        except Exception as e:
+            logger.warning(f"Error calculating direction changes: {e}")
+            avg_direction_change = 0.05  # Default value
+        
+        # Determine market condition
+        is_volatile = recent_volatility > 5.0 or recent_volume_change > 100
+        is_trending = abs(price_change) > 15 and adx > 30
+        trend_direction = 1 if price_change > 0 else -1 if price_change < 0 else 0
+        is_ranging = avg_direction_change > 0.1 and not is_trending
+        
+        # Get the current trend direction from Supertrend - safely
+        try:
+            current_supertrend_direction = df['direction'].iloc[-1]
+        except Exception as e:
+            logger.warning(f"Error getting supertrend direction: {e}")
+            current_supertrend_direction = trend_direction or 1  # Default to trend direction or bullish
+        
+        return {
+            'volatile': is_volatile,
+            'trending': is_trending,
+            'ranging': is_ranging,
+            'trend_direction': trend_direction,
+            'supertrend_direction': current_supertrend_direction,
+            'volatility': recent_volatility,
+            'adx': adx,
+            'price_change': price_change,
+            'volume_change': recent_volume_change
+        }
+    
+    def adjust_parameters(self, df, condition):
+        """Dynamically adjust strategy parameters based on market conditions"""
+        current_time = time.time()
+        
+        # Only adjust every adjustment_interval hours
+        if current_time - self.last_adjustment_time < self.adjustment_interval * 3600:
+            return
+            
+        # Adjust grid parameters based on volatility and market condition
+        if condition['volatile']:
+            # Wider grid spacing but fewer levels in volatile markets
+            volatility_factor = min(max(condition['volatility'] / 5, 1), 3)
+            self.grid_levels = min(int(10 * volatility_factor), self.max_grid_levels)
+            self.grid_step_percent = min(self.max_grid_step, 0.65 * volatility_factor)
+            
+            # Faster EMA periods for volatile markets
+            self.ema_short = 3
+            self.ema_medium = 15
+            
+            # Adjust RSI for volatile markets - wider thresholds
+            self.rsi_period = 10  # Faster response
+            self.rsi_overbought = 75
+            self.rsi_oversold = 25
+            
+            # Adjust VWAP window for faster response
+            self.vwap_window = 10
+            
+            logger.info(f"SOL Strategy: Adjusted for volatile market. Grid levels={self.grid_levels}, step={self.grid_step_percent:.2f}%")
+            
+        elif condition['trending']:
+            trend_dir = condition['trend_direction']
+            
+            # Adjust based on trend direction and strength
+            if trend_dir > 0:  # Uptrend
+                # In uptrend, use fewer grid levels but wider spacing
+                self.grid_levels = max(int(self.min_grid_levels * 1.5), 12)
+                self.grid_step_percent = min(0.8, 0.6 + condition['adx'] / 100)
+                
+                # Adjust RSI for uptrend bias
+                self.rsi_overbought = 75
+                self.rsi_oversold = 35
+                
+                # Adjust stochastic for trend following
+                self.stoch_k = 12
+                self.stoch_d = 5
+                
+            else:  # Downtrend
+                # In downtrend, use more grid levels with tighter spacing
+                self.grid_levels = max(int(self.min_grid_levels * 1.5), 12)
+                self.grid_step_percent = min(0.8, 0.6 + condition['adx'] / 100)
+                
+                # Adjust RSI for downtrend bias
+                self.rsi_overbought = 65
+                self.rsi_oversold = 25
+                
+                # Adjust stochastic for trend following
+                self.stoch_k = 12
+                self.stoch_d = 5
+            
+            # Adjust EMAs for trend following
+            self.ema_short = 8
+            self.ema_medium = 21
+            self.ema_long = 55
+            
+            logger.info(f"SOL Strategy: Adjusted for trending market ({trend_dir}). Grid levels={self.grid_levels}, step={self.grid_step_percent:.2f}%")
+            
+        elif condition['ranging']:
+            # More grid levels with tighter spacing in ranging markets
+            range_volatility = condition['volatility'] / 2
+            self.grid_levels = max(20, int(25 - range_volatility))
+            self.grid_step_percent = max(self.min_grid_step, 0.35 + range_volatility * 0.05)
+            
+            # Adjust Bollinger Bands for range trading
+            self.bb_std = 1.8
+            
+            # Standard RSI for range trading
+            self.rsi_overbought = 70
+            self.rsi_oversold = 30
+            self.rsi_period = 14
+            
+            # Adjust EMAs for range trading
+            self.ema_short = 5
+            self.ema_medium = 15
+            self.ema_long = 40
+            
+            logger.info(f"SOL Strategy: Adjusted for ranging market. Grid levels={self.grid_levels}, step={self.grid_step_percent:.2f}%")
+            
+        else:
+            # Default settings for normal markets
+            self.grid_levels = 15
+            self.grid_step_percent = 0.65
+            self.vwap_window = 14
+            self.rsi_period = 14
+            self.rsi_overbought = 70
+            self.rsi_oversold = 30
+            self.stoch_k = 14
+            self.stoch_d = 3
+            self.ema_short = 5
+            self.ema_medium = 21
+            self.ema_long = 55
+            
+            logger.info("SOL Strategy: Using default parameters for normal market conditions")
+        
+        # Ensure parameters are within bounds
+        self.grid_levels = max(min(self.grid_levels, self.max_grid_levels), self.min_grid_levels)
+        self.grid_step_percent = max(min(self.grid_step_percent, self.max_grid_step), self.min_grid_step)
+        
+        # Update last adjustment time
+        self.last_adjustment_time = current_time
+        
+        # Periodically run auto-optimization based on trade results
+        self.optimization_counter += 1
+        if self.optimization_counter >= 10:  # Every 10 adjustments
+            self.optimize_from_results()
+            self.optimization_counter = 0
+    
+    def optimize_from_results(self):
+        """Auto-optimize parameters based on trade results"""
+        # Skip if not enough trades
+        if self.trade_results['wins'] + self.trade_results['losses'] < 10:
+            return
+            
+        win_rate = self.trade_results['wins'] / (self.trade_results['wins'] + self.trade_results['losses'])
+        
+        # Adjust grid parameters based on win rate
+        if win_rate < 0.4:  # Poor performance
+            # Reduce risk by increasing grid levels and reducing step size
+            self.grid_levels = min(self.grid_levels + 2, self.max_grid_levels)
+            self.grid_step_percent = max(self.grid_step_percent * 0.9, self.min_grid_step)
+            logger.info(f"SOL Strategy: Auto-optimization adjusted parameters due to low win rate ({win_rate:.2f})")
+            
+        elif win_rate > 0.6:  # Good performance
+            # Can be slightly more aggressive
+            self.grid_step_percent = min(self.grid_step_percent * 1.1, self.max_grid_step)
+            logger.info(f"SOL Strategy: Auto-optimization adjusted parameters due to high win rate ({win_rate:.2f})")
+        
+        # Reset trade results for next period
+        self.trade_results = {'wins': 0, 'losses': 0, 'profit': 0, 'drawdown': 0}
+    
+    def update_trade_result(self, result):
+        """Update trade results for optimization"""
+        if result['profit'] > 0:
+            self.trade_results['wins'] += 1
+            self.trade_results['profit'] += result['profit']
+        else:
+            self.trade_results['losses'] += 1
+            self.trade_results['drawdown'] = min(self.trade_results['drawdown'], result['profit'])
+    
+    def get_signal(self, klines):
+        """Get trading signal based on current market conditions"""
+        # Convert klines to dataframe
+        df = self.prepare_data(klines)
+        
+        # Safety check - need minimum data to operate
+        if len(df) < 30:
+            logger.warning(f"SOL FuturesGrid: Not enough data to generate signal ({len(df)} candles)")
+            return None
+        
+        # Detect market condition
+        condition = self.detect_market_condition(df)
+        
+        # Dynamically adjust parameters based on market conditions
+        self.adjust_parameters(df, condition)
+        
+        # Use safe window periods based on available data
+        ema_short = min(self.ema_short, len(df)//2)
+        ema_medium = min(self.ema_medium, len(df)//2)
+        ema_long = min(self.ema_long, len(df)//2)
+        
+        if ema_short < 2: ema_short = 2
+        if ema_medium < 3: ema_medium = 3
+        if ema_long < 5: ema_long = 5
+        
+        # Calculate indicators with proper error handling
+        try:
+            # Calculate EMAs for trend identification
+            df['ema_short'] = ta.trend.EMAIndicator(
+                close=df['close'], 
+                window=ema_short
+            ).ema_indicator()
+            
+            df['ema_medium'] = ta.trend.EMAIndicator(
+                close=df['close'], 
+                window=ema_medium
+            ).ema_indicator()
+            
+            df['ema_long'] = ta.trend.EMAIndicator(
+                close=df['close'], 
+                window=ema_long
+            ).ema_indicator()
+            
+            # Calculate ATR for volatility assessment - safe period
+            atr_period = min(self.atr_period, len(df)//2)
+            if atr_period < 2: atr_period = 2
+            
+            df['atr'] = ta.volatility.AverageTrueRange(
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                window=atr_period
+            ).average_true_range()
+            
+            # Calculate normalized ATR (%)
+            df['n_atr'] = (df['atr'] / df['close']) * 100
+            
+            # Calculate Bollinger Bands for dynamic grid - safe period
+            bb_period = min(self.bb_period, len(df)//2)
+            if bb_period < 2: bb_period = 2
+            
+            bb_indicator = ta.volatility.BollingerBands(
+                close=df['close'],
+                window=bb_period,
+                window_dev=self.bb_std
+            )
+            df['bb_high'] = bb_indicator.bollinger_hband()
+            df['bb_low'] = bb_indicator.bollinger_lband()
+            df['bb_mid'] = bb_indicator.bollinger_mavg()
+            df['bb_width'] = (df['bb_high'] - df['bb_low']) / df['bb_mid']
+            
+            # Calculate RSI for momentum - safe period
+            rsi_period = min(self.rsi_period, len(df)//2)
+            if rsi_period < 2: rsi_period = 2
+            
+            df['rsi'] = ta.momentum.RSIIndicator(
+                close=df['close'], 
+                window=rsi_period
+            ).rsi()
+            
+            # Calculate Stochastic for momentum - safe periods
+            stoch_k = min(self.stoch_k, len(df)//2)
+            stoch_d = min(self.stoch_d, len(df)//2)
+            
+            if stoch_k < 2: stoch_k = 2
+            if stoch_d < 2: stoch_d = 2
+            
+            stoch = ta.momentum.StochasticOscillator(
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                window=stoch_k,
+                smooth_window=stoch_d
+            )
+            df['stoch_k'] = stoch.stoch()
+            df['stoch_d'] = stoch.stoch_signal()
+            
+            # Order flow approximation using volume delta
+            df['volume_delta'] = df.apply(
+                lambda x: x['volume'] if x['close'] > x['open'] else -x['volume'], 
+                axis=1
+            )
+            
+            # Safe window for rolling operations
+            vwap_window = min(self.vwap_window, len(df)//2)
+            if vwap_window < 2: vwap_window = 2
+            
+            df['cum_delta'] = df['volume_delta'].rolling(window=vwap_window).sum()
+            df['obv'] = ta.volume.OnBalanceVolumeIndicator(
+                close=df['close'],
+                volume=df['volume']
+            ).on_balance_volume()
+            
+            # Calculate VWAP (approximation)
+            df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+            df['tp_volume'] = df['typical_price'] * df['volume']
+            df['cum_tp_volume'] = df['tp_volume'].rolling(window=vwap_window).sum()
+            df['cum_volume'] = df['volume'].rolling(window=vwap_window).sum()
+            
+            # Handle potential division by zero
+            df['vwap'] = df.apply(
+                lambda x: x['cum_tp_volume'] / x['cum_volume'] if x['cum_volume'] > 0 else x['close'],
+                axis=1
+            )
+            
+        except Exception as e:
+            logger.warning(f"Error calculating indicators: {e}")
+            return None
+        
+        # Check for NaN values in key indicators
+        key_indicators = ['ema_short', 'ema_medium', 'bb_high', 'bb_low', 'rsi', 'stoch_k', 'vwap']
+        for indicator in key_indicators:
+            if indicator in df.columns and (df[indicator].isna().iloc[-1] or df[indicator].isna().iloc[-2]):
+                logger.warning(f"SOL FuturesGrid: NaN value in {indicator}, skipping signal generation")
+                return None
+                
+        # Ensure we have at least 2 rows of valid data
+        if len(df) < 2:
+            logger.warning("SOL FuturesGrid: Not enough data points for signal generation")
+            return None
+            
+        # Safe extraction of current and previous values
+        try:
+            # Current values
+            current_price = df['close'].iloc[-1]
+            current_ema_short = df['ema_short'].iloc[-1]
+            current_ema_medium = df['ema_medium'].iloc[-1]
+            current_ema_long = df['ema_long'].iloc[-1]
+            current_atr = df['atr'].iloc[-1]
+            current_n_atr = df['n_atr'].iloc[-1]
+            current_bb_high = df['bb_high'].iloc[-1]
+            current_bb_low = df['bb_low'].iloc[-1]
+            current_bb_mid = df['bb_mid'].iloc[-1]
+            current_bb_width = df['bb_width'].iloc[-1]
+            current_rsi = df['rsi'].iloc[-1]
+            current_stoch_k = df['stoch_k'].iloc[-1]
+            current_stoch_d = df['stoch_d'].iloc[-1]
+            current_cum_delta = df['cum_delta'].iloc[-1]
+            current_obv = df['obv'].iloc[-1]
+            current_vwap = df['vwap'].iloc[-1]
+            
+            # Previous values
+            prev_price = df['close'].iloc[-2]
+            prev_ema_short = df['ema_short'].iloc[-2]
+            prev_ema_medium = df['ema_medium'].iloc[-2]
+            prev_rsi = df['rsi'].iloc[-2]
+            prev_stoch_k = df['stoch_k'].iloc[-2]
+            prev_stoch_d = df['stoch_d'].iloc[-2]
+            prev_cum_delta = df['cum_delta'].iloc[-2]
+            prev_obv = df['obv'].iloc[-2]
+        except Exception as e:
+            logger.warning(f"Error extracting indicator values: {e}")
+            return None
+        
+        # Calculate volatility-adjusted grid levels
+        # Higher volatility = wider grid steps
+        volatility_factor = min(max(current_n_atr / 2, 0.4), 1.5)  # Constrain volatility factor
+        grid_range = current_bb_high - current_bb_low
+        
+        # Market condition assessment
+        trend_strength = abs(current_ema_medium - current_ema_long) / max(current_atr, 0.0001)  # Avoid division by zero
+        is_strong_trend = trend_strength > 1.5
+        is_uptrend = current_ema_short > current_ema_medium > current_ema_long
+        is_downtrend = current_ema_short < current_ema_medium < current_ema_long
+        
+        # Signal logic with dynamic adjustment based on market conditions
+        buy_signal = False
+        sell_signal = False
+        reason = ""
+        
+        # Adjust signal logic based on detected market condition
+        if condition['trending']:
+            if condition['trend_direction'] > 0:  # Uptrend
+                # BUY conditions for uptrend - buy pullbacks
+                if (current_price < current_ema_medium and 
+                    current_price > current_ema_long and
+                    current_rsi < 50 and current_rsi > prev_rsi):
+                    if current_stoch_k < 40 and current_stoch_k > current_stoch_d:
+                        buy_signal = True
+                        reason = "Buying pullback in uptrend with stochastic confirmation"
+                
+                # SELL conditions for uptrend - take profits at resistance
+                if (current_price > current_bb_high * 0.98 and
+                    current_stoch_k > 80 and current_stoch_k < current_stoch_d):
+                    sell_signal = True
+                    reason = "Taking profit at resistance in uptrend"
+                    
+            else:  # Downtrend
+                # BUY conditions for downtrend - only strong reversal signals
+                if (current_price < current_bb_low * 1.02 and
+                    current_price > prev_price and
+                    current_rsi < 30 and current_rsi > prev_rsi and
+                    current_obv > prev_obv):
+                    buy_signal = True
+                    reason = "Potential reversal signal in downtrend"
+                
+                # SELL conditions for downtrend - sell rallies
+                if (current_price > current_vwap and
+                    current_price < current_bb_mid and
+                    current_ema_short < current_ema_medium and
+                    current_stoch_k > 60 and current_stoch_k < current_stoch_d):
+                    sell_signal = True
+                    reason = "Selling rally in downtrend"
+                    
+        elif condition['ranging']:
+            # BUY conditions for ranging market - buy near support with positive order flow
+            grid_buy_level = current_bb_low + (grid_range * 0.15)  # Lower 15% of range
+            if current_price <= grid_buy_level:
+                if current_cum_delta > prev_cum_delta:
+                    if current_rsi < self.rsi_oversold + 10 and current_rsi > prev_rsi:
+                        buy_signal = True
+                        reason = "Range trading buy at support with positive flow"
+            
+            # SELL conditions for ranging market - sell near resistance with negative order flow
+            grid_sell_level = current_bb_high - (grid_range * 0.15)  # Upper 15% of range
+            if current_price >= grid_sell_level:
+                if current_cum_delta < prev_cum_delta:
+                    if current_rsi > self.rsi_overbought - 10 and current_rsi < prev_rsi:
+                        sell_signal = True
+                        reason = "Range trading sell at resistance with negative flow"
+                        
+        elif condition['volatile']:
+            # BUY conditions for volatile market - more confirmations required
+            if (current_ema_short > current_ema_medium and prev_ema_short <= prev_ema_medium):
+                if (current_price > current_vwap and 
+                    current_obv > prev_obv and 
+                    current_cum_delta > prev_cum_delta):
+                    buy_signal = True
+                    reason = "EMA cross with multiple confirmations in volatile market"
+            
+            # SELL conditions for volatile market - quicker exit
+            if (current_ema_short < current_ema_medium and prev_ema_short >= prev_ema_medium):
+                if (current_price < current_vwap or 
+                    current_obv < prev_obv):
+                    sell_signal = True
+                    reason = "Quick exit on EMA cross in volatile market"
+                    
+        else:
+            # Default BUY conditions for normal market
+            grid_buy_level = current_bb_low + (grid_range * 0.2)
+            if current_price <= grid_buy_level:
+                if current_cum_delta > prev_cum_delta and current_obv > prev_obv:
+                    if current_rsi < 40 and current_rsi > prev_rsi:
+                        buy_signal = True
+                        reason = "Grid buy at support with positive order flow"
+            
+            # Default SELL conditions for normal market
+            grid_sell_level = current_bb_high - (grid_range * 0.2)
+            if current_price >= grid_sell_level:
+                if current_cum_delta < prev_cum_delta and current_obv < prev_obv:
+                    if current_rsi > 60 and current_rsi < prev_rsi:
+                        sell_signal = True
+                        reason = "Grid sell at resistance with negative order flow"
+        
+        # Generate signals
+        if buy_signal:
+            logger.info(f"SOL FuturesGrid: BUY signal - {reason} [Condition: {'Trending' if condition['trending'] else 'Ranging' if condition['ranging'] else 'Volatile' if condition['volatile'] else 'Normal'}]")
+            return "BUY"
+        elif sell_signal:
+            logger.info(f"SOL FuturesGrid: SELL signal - {reason} [Condition: {'Trending' if condition['trending'] else 'Ranging' if condition['ranging'] else 'Volatile' if condition['volatile'] else 'Normal'}]")
+            return "SELL"
+            
+        return None
+
+
+# Update the strategy factory to include the new strategies
 def get_strategy(strategy_name):
     """Factory function to get a strategy by name"""
     strategies = {
@@ -883,6 +2021,8 @@ def get_strategy(strategy_name):
         'XRP_Scalping': XRPScalpingStrategy(),
         'DOGE_Scalping': DOGEScalpingStrategy(),
         'SHIB_Breakout': SHIBBreakoutStrategy(),
+        'XRP_FuturesGrid': XRPFuturesGridStrategy(),
+        'SOL_FuturesGrid': SOLFuturesGridStrategy(),
     }
     
     if strategy_name in strategies:
@@ -907,11 +2047,11 @@ def get_strategy_for_symbol(symbol, strategy_name=None):
     elif 'BNBUSDT' in symbol:
         return BNBGridStrategy()
     elif 'SOLUSDT' in symbol:
-        return SOLSqueezeStrategy()
+        return SOLFuturesGridStrategy()  # Updated to use the new SOL strategy
     elif 'ADAUSDT' in symbol:
         return ADAEMATrendStrategy()
     elif 'XRPUSDT' in symbol:
-        return XRPScalpingStrategy()
+        return XRPFuturesGridStrategy()  # Updated to use the new XRP strategy
     elif 'DOGEUSDT' in symbol:
         return DOGEScalpingStrategy()
     elif 'SHIBUSDT' in symbol:

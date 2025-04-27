@@ -41,7 +41,7 @@ print_message "📦 Checking and installing required system packages..."
 sudo apt-get update
 sudo apt-get install -y python3-venv python3-pip supervisor
 
-# Create virtual environment if it doesn't exist
+# Create virtual environment first if it doesn't exist
 if [ ! -d "$VENV_DIR" ]; then
     print_message "🔧 Creating virtual environment..."
     python3 -m venv "$VENV_DIR"
@@ -49,10 +49,16 @@ else
     print_message "✅ Virtual environment already exists." "$YELLOW"
 fi
 
-# Activate virtual environment and install requirements
-print_message "📚 Installing dependencies..."
+# Activate virtual environment
 source "${VENV_DIR}/bin/activate"
 pip install --upgrade pip
+
+# Run the TA-Lib installation script after creating the virtual environment
+print_message "📊 Installing TA-Lib library for technical analysis..."
+bash "${BOT_DIR}/install_talib.sh"
+
+# Install requirements
+print_message "📚 Installing dependencies..."
 pip install -r "${BOT_DIR}/requirements.txt"
 
 # Create necessary directories

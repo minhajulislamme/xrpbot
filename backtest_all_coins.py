@@ -7,6 +7,12 @@ import os
 import logging
 import argparse
 from datetime import datetime
+import warnings
+
+# Suppress specific NumPy warnings that occur in the TA library
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in scalar divide")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in divide")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in true_divide")
 
 # Add the parent directory to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
