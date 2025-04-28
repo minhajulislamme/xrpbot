@@ -8,16 +8,16 @@ set -e
 
 echo "Setting up Binance Bot environment with virtual environment..."
 
-# Install TA-Lib dependencies (required for ta-lib Python package)
-echo "Installing TA-Lib dependencies..."
+# Install TA-Lib dependencies and other build requirements
+echo "Installing TA-Lib dependencies and build tools..."
 if [ -f /etc/debian_version ]; then
     # Debian/Ubuntu
     sudo apt-get update
-    sudo apt-get install -y build-essential
-    sudo apt-get install -y wget
-    sudo apt-get install -y pkg-config
-    sudo apt-get install -y python3-venv
-    sudo apt-get install -y python3-dev
+    sudo apt-get install -y build-essential wget pkg-config python3-venv python3-dev
+    sudo apt-get install -y cmake libssl-dev libffi-dev
+    sudo apt-get install -y libcurl4-openssl-dev  # Required for some Python packages
+    sudo apt-get install -y python3-setuptools python3-pip  # Ensure pip and setuptools are up-to-date
+    sudo apt-get install -y git  # Often needed for pip installations
 
     # Download and install TA-Lib
     if [ ! -d "ta-lib" ]; then
@@ -43,9 +43,11 @@ if [ -f /etc/debian_version ]; then
 elif [ -f /etc/redhat-release ]; then
     # CentOS/RHEL
     sudo yum groupinstall -y "Development Tools"
-    sudo yum install -y wget
-    sudo yum install -y python3-venv
-    sudo yum install -y python3-devel
+    sudo yum install -y wget python3-venv python3-devel
+    sudo yum install -y cmake openssl-devel libffi-devel
+    sudo yum install -y libcurl-devel
+    sudo yum install -y python3-setuptools python3-pip
+    sudo yum install -y git
 
     # Download and install TA-Lib
     if [ ! -d "ta-lib" ]; then
@@ -85,8 +87,7 @@ source venv/bin/activate
 
 # Install Python packages in the virtual environment
 echo "Installing Python requirements in virtual environment..."
-pip install --upgrade pip
-pip install wheel
+pip install --upgrade pip setuptools wheel
 
 # Install TA-Lib Python wrapper specifically before other requirements
 echo "Installing TA-Lib Python wrapper..."
@@ -97,6 +98,10 @@ pip install --no-binary :all: ta-lib
 
 # Install other dependencies
 echo "Installing remaining Python requirements..."
+# Use system-provided cmake instead of letting pip build it
+pip install --upgrade cmake
+
+# Install remaining requirements
 pip install -r requirements.txt
 
 echo "Installation complete! All packages have been installed in a virtual environment."
