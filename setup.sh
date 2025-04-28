@@ -104,7 +104,7 @@ else
     
     if [ "$IS_DIGITAL_OCEAN" = true ]; then
         print_message "Detected Digital Ocean VPS environment. Using specialized installation script..." "$YELLOW"
-        bash "${BOT_DIR}/install_talib_do.sh"
+        bash "${BOT_DIR}/install_talib.sh"
     else
         print_message "Using standard installation script..." "$YELLOW"
         bash "${BOT_DIR}/install_talib.sh"
