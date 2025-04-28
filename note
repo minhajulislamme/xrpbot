@@ -69,3 +69,8 @@ No config updates to processes
 
 Current bot status:
 binancebot                       STARTING  
+
+Make the script executable with: chmod +x vps_setup.sh
+Run the setup script: vps_setup.sh
+Start your bot in 24/7 mode: ./start_bot_24_7.sh
+You can monitor your bot's status with ./check_status.sh and view logs with ./check_logs.sh.

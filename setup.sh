@@ -17,6 +17,7 @@ if [ -f /etc/debian_version ]; then
     sudo apt-get install -y wget
     sudo apt-get install -y pkg-config
     sudo apt-get install -y python3-venv
+    sudo apt-get install -y python3-dev
 
     # Download and install TA-Lib
     if [ ! -d "ta-lib" ]; then
@@ -29,13 +30,22 @@ if [ -f /etc/debian_version ]; then
         cd ..
         rm -rf ta-lib-0.4.0-src.tar.gz
     else
-        echo "TA-Lib source already downloaded."
+        echo "TA-Lib source already downloaded, trying to build and install..."
+        cd ta-lib/
+        ./configure --prefix=/usr
+        make
+        sudo make install
+        cd ..
     fi
+    
+    # Ensure library path is updated
+    sudo ldconfig
 elif [ -f /etc/redhat-release ]; then
     # CentOS/RHEL
     sudo yum groupinstall -y "Development Tools"
     sudo yum install -y wget
     sudo yum install -y python3-venv
+    sudo yum install -y python3-devel
 
     # Download and install TA-Lib
     if [ ! -d "ta-lib" ]; then
@@ -48,8 +58,16 @@ elif [ -f /etc/redhat-release ]; then
         cd ..
         rm -rf ta-lib-0.4.0-src.tar.gz
     else
-        echo "TA-Lib source already downloaded."
+        echo "TA-Lib source already downloaded, trying to build and install..."
+        cd ta-lib/
+        ./configure --prefix=/usr
+        make
+        sudo make install
+        cd ..
     fi
+    
+    # Ensure library path is updated
+    sudo ldconfig
 else
     echo "Unsupported OS. Please install TA-Lib manually according to your OS instructions."
     echo "See: https://github.com/mrjbq7/ta-lib#dependencies"
@@ -57,7 +75,7 @@ else
 fi
 
 # Update LD_LIBRARY_PATH to find the TA-Lib library
-export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
 
 # Create and activate virtual environment
 echo "Creating virtual environment..."
@@ -69,6 +87,16 @@ source venv/bin/activate
 echo "Installing Python requirements in virtual environment..."
 pip install --upgrade pip
 pip install wheel
+
+# Install TA-Lib Python wrapper specifically before other requirements
+echo "Installing TA-Lib Python wrapper..."
+export TA_LIBRARY_PATH=/usr/lib
+export TA_INCLUDE_PATH=/usr/include
+pip install numpy
+pip install --no-binary :all: ta-lib
+
+# Install other dependencies
+echo "Installing remaining Python requirements..."
 pip install -r requirements.txt
 
 echo "Installation complete! All packages have been installed in a virtual environment."
