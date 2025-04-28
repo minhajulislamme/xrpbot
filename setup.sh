@@ -53,10 +53,17 @@ fi
 
 # Check Python version
 PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-if [ "$(echo "$PY_VERSION < 3.8" | bc)" -eq 1 ]; then
+PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
+PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
+
+if [ "$PY_MAJOR" -lt 3 ] || ([ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]); then
     print_message "❌ Python 3.8+ is required. Your version: $PY_VERSION" "$RED"
     exit 1
+else
+    print_message "✅ Python version check passed: $PY_VERSION" "$GREEN"
 fi
+
+# Continue with the rest of the setup
 
 # Check for pip
 if ! command_exists pip3; then
