@@ -1,0 +1,9 @@
+# Binance Bot .gitignore file
+
+venv
+backtest_results
+logs
+reports
+state
+ta-lib
+note
