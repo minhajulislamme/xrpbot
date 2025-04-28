@@ -89,16 +89,42 @@ print_message "📊 Installing TA-Lib specifically with no-cache-dir option..."
 if python3 -c "import talib" &>/dev/null; then
     print_message "TA-Lib is already installed." "$YELLOW"
 else
-    print_message "TA-Lib not found. Installing TA-Lib C library first..." "$YELLOW"
-    bash "${BOT_DIR}/install_talib.sh"
+    print_message "TA-Lib not found. Installing TA-Lib..." "$YELLOW"
     
-    print_message "Installing TA-Lib Python wrapper with no-cache-dir..." "$YELLOW"
-    sudo pip3 install --no-cache-dir ta-lib
+    # Check if running on Digital Ocean VPS
+    IS_DIGITAL_OCEAN=false
+    if [ -f /sys/devices/virtual/dmi/id/sys_vendor ] && grep -q "DigitalOcean" /sys/devices/virtual/dmi/id/sys_vendor; then
+        IS_DIGITAL_OCEAN=true
+    elif [ -f /proc/cpuinfo ] && grep -q "QEMU" /proc/cpuinfo; then
+        # Additional check for DigitalOcean VPS
+        if curl -s http://169.254.169.254/metadata/v1/id 2>/dev/null | grep -q "digitalocean"; then
+            IS_DIGITAL_OCEAN=true
+        fi
+    fi
+    
+    if [ "$IS_DIGITAL_OCEAN" = true ]; then
+        print_message "Detected Digital Ocean VPS environment. Using specialized installation script..." "$YELLOW"
+        bash "${BOT_DIR}/install_talib_do.sh"
+    else
+        print_message "Using standard installation script..." "$YELLOW"
+        bash "${BOT_DIR}/install_talib.sh"
+    fi
     
     # Verify installation
     if ! python3 -c "import talib" &>/dev/null; then
-        print_message "❌ TA-Lib installation failed. Please check the error messages." "$RED"
-        exit 1
+        # Try to fallback to the ta package if talib fails
+        print_message "❌ TA-Lib installation failed. Trying to install alternative 'ta' package..." "$YELLOW"
+        sudo pip3 install --no-cache-dir ta
+        
+        if python3 -c "import ta" &>/dev/null; then
+            print_message "✅ Alternative 'ta' package installed successfully." "$GREEN"
+            print_message "⚠️  Note: You may need to modify your code to use 'ta' instead of 'talib'." "$YELLOW"
+        else
+            print_message "❌ All TA library installation attempts failed. Please check the error messages." "$RED"
+            exit 1
+        fi
+    else
+        print_message "✅ TA-Lib installed successfully." "$GREEN"
     fi
 fi
 
