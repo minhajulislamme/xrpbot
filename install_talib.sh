@@ -57,7 +57,7 @@ fi
 
 echo "Configuring and building TA-Lib..."
 # Using default install location that works better with linkers
-./configure && make && sudo make install || {
+./configure --prefix=/usr && make && sudo make install || {
     echo "Failed to build and install TA-Lib C library.";
     exit 1;
 }
@@ -69,33 +69,88 @@ sudo ldconfig || {
     exit 1;
 }
 
-# Ensure library can be found by creating symlinks if needed
-echo "Creating additional symlinks to ensure library is found..."
-if [ -f "/usr/local/lib/libta_lib.a" ] && [ ! -f "/usr/lib/libta_lib.a" ]; then
-    sudo ln -s /usr/local/lib/libta_lib.a /usr/lib/libta_lib.a
+# Check if libraries exist and create symlinks with different variations
+echo "Creating comprehensive symlinks to ensure library is found..."
+
+# Check if lib exists in /usr/local/lib and create symlinks in /usr/lib
+for LIB_FILE in libta_lib.a libta_lib.la libta_lib.so libta_lib.so.0 libta_lib.so.0.0.0; do
+    if [ -f "/usr/local/lib/$LIB_FILE" ]; then
+        echo "Found $LIB_FILE in /usr/local/lib, creating symlink in /usr/lib"
+        sudo ln -sf /usr/local/lib/$LIB_FILE /usr/lib/$LIB_FILE
+    fi
+done
+
+# Check if lib exists in /usr/lib and create symlinks in /usr/local/lib
+for LIB_FILE in libta_lib.a libta_lib.la libta_lib.so libta_lib.so.0 libta_lib.so.0.0.0; do
+    if [ -f "/usr/lib/$LIB_FILE" ] && [ ! -f "/usr/local/lib/$LIB_FILE" ]; then
+        echo "Found $LIB_FILE in /usr/lib, creating symlink in /usr/local/lib"
+        sudo ln -sf /usr/lib/$LIB_FILE /usr/local/lib/$LIB_FILE
+    fi
+done
+
+# Create symlinks for libta-lib (with dash) as some builds look for this naming
+if [ -f "/usr/local/lib/libta_lib.so" ]; then
+    echo "Creating libta-lib.so symlinks..."
+    sudo ln -sf /usr/local/lib/libta_lib.so /usr/lib/libta-lib.so
+    sudo ln -sf /usr/local/lib/libta_lib.so /usr/local/lib/libta-lib.so
 fi
 
-if [ -f "/usr/local/lib/libta_lib.la" ] && [ ! -f "/usr/lib/libta_lib.la" ]; then
-    sudo ln -s /usr/local/lib/libta_lib.la /usr/lib/libta_lib.la
+if [ -f "/usr/local/lib/libta_lib.a" ]; then
+    echo "Creating libta-lib.a symlinks..."
+    sudo ln -sf /usr/local/lib/libta_lib.a /usr/lib/libta-lib.a 
+    sudo ln -sf /usr/local/lib/libta_lib.a /usr/local/lib/libta-lib.a
 fi
 
-if [ -f "/usr/local/lib/libta_lib.so" ] && [ ! -f "/usr/lib/libta_lib.so" ]; then
-    sudo ln -s /usr/local/lib/libta_lib.so /usr/lib/libta_lib.so
-fi
+# Export the library paths to make sure the installer can find it
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib:/usr/lib
+export LIBRARY_PATH=$LIBRARY_PATH:/usr/local/lib:/usr/lib
+export C_INCLUDE_PATH=$C_INCLUDE_PATH:/usr/local/include:/usr/include
+export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:/usr/local/include:/usr/include
 
-# Export the library path to make sure the installer can find it
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
-
-# Step 3: Install TA-Lib Python wrapper
+# Step 3: Install TA-Lib Python wrapper with detailed error reporting
 echo "Step 3: Installing TA-Lib Python wrapper..."
-pip install --no-cache-dir ta-lib || {
-    # If direct install fails, try using pip with include and library paths specified
-    echo "Direct installation failed, trying with explicit library paths..."
-    TALIB_INCLUDE=/usr/local/include TALIB_LIBRARY=/usr/local/lib pip install --no-cache-dir ta-lib || {
-        echo "Failed to install TA-Lib Python wrapper.";
-        exit 1;
+
+# Try multiple installation methods
+echo "Method 1: Direct pip install with no cache..."
+pip install --verbose --no-cache-dir ta-lib || {
+    echo "Method 1 failed, trying Method 2: Using environment variables..."
+    TALIB_INCLUDE=/usr/local/include TALIB_LIBRARY=/usr/local/lib pip install --verbose --no-cache-dir ta-lib || {
+        echo "Method 2 failed, trying Method 3: Installing from source..."
+        
+        # Try installing from source
+        cd "$TEMP_DIR"
+        echo "Downloading TA-Lib Python wrapper source..."
+        pip download --no-binary :all: --no-deps ta-lib
+        
+        # Extract and build
+        tar -xf ta-lib-*.tar.gz
+        cd ta-lib-*/
+        
+        # Edit setup.py to explicitly specify include_dirs and library_dirs
+        if [ -f "setup.py" ]; then
+            echo "Modifying setup.py to explicitly specify library paths..."
+            # Create backup of original setup.py
+            cp setup.py setup.py.bak
+            
+            # Modify setup.py to add include and library directories
+            sed -i 's/Extension(/Extension(\n    include_dirs=[\/usr\/local\/include, \/usr\/include],\n    library_dirs=[\/usr\/local\/lib, \/usr\/lib],\n    /' setup.py || echo "Failed to modify setup.py, continuing anyway..."
+        fi
+        
+        # Build and install
+        TALIB_INCLUDE=/usr/local/include TALIB_LIBRARY=/usr/local/lib LDFLAGS="-L/usr/local/lib -L/usr/lib" CFLAGS="-I/usr/local/include -I/usr/include" python setup.py build_ext --include-dirs=/usr/local/include:/usr/include --library-dirs=/usr/local/lib:/usr/lib install || {
+            echo "All methods failed to install TA-Lib Python wrapper.";
+            exit 1;
+        }
     }
 }
+
+# Check if installation was successful
+if python3 -c "import talib" 2>/dev/null; then
+    echo "✅ TA-Lib Python wrapper installed successfully!"
+else
+    echo "❌ TA-Lib installation verification failed. The module could not be imported."
+    exit 1
+fi
 
 # Step 4: Install all requirements from requirements.txt
 echo "Step 4: Installing requirements from requirements.txt..."
