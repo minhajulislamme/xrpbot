@@ -8,6 +8,8 @@
 source venv/bin/activate  # or whatever your venv folder is named
 pip install tqdm
 
+pip install TA-Lib
+
 python main.py --small-account --skip-validation
 
 python main.py --small-account --skip-validation --symbol XRPUSDT

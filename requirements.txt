@@ -9,4 +9,12 @@ matplotlib>=3.5.0
 ccxt>=2.0.0
 requests>=2.26.0
 tqdm>=4.62.0
-TA-Lib>=0.4.24
+ta-lib>=0.4.0
+# Additional packages for monitoring and reliability
+psutil>=5.9.0
+retrying>=1.3.3
+APScheduler>=3.9.1
+# Logging improvements
+loguru>=0.6.0
+# Security
+cryptography>=37.0.0
