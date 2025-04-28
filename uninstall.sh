@@ -6,7 +6,36 @@
 # Exit on any error
 set -e
 
+# Check for root privileges
+if [ "$EUID" -eq 0 ]; then
+    echo "Please do not run this script as root. Use a normal user with sudo privileges."
+    exit 1
+fi
+
 echo "Uninstalling Binance Bot components..."
+
+# Stop running bot processes if any
+if pgrep -f "python3 main.py" > /dev/null; then
+    echo "Stopping running bot process..."
+    pkill -f "python3 main.py"
+fi
+if screen -list | grep -q "binance_bot"; then
+    echo "Stopping running screen session..."
+    screen -S binance_bot -X quit
+fi
+
+# Uninstall Python packages from venv if exists
+if [ -d "venv" ]; then
+    echo "Uninstalling Python packages from virtual environment..."
+    source venv/bin/activate
+    if [ -f "requirements.txt" ]; then
+        pip uninstall -y -r requirements.txt
+    fi
+    deactivate
+    rm -rf venv
+else
+    echo "Virtual environment not found. Skipping venv removal."
+fi
 
 # Read requirements.txt and uninstall each package
 if [ -f "requirements.txt" ]; then
