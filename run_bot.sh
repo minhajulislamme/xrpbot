@@ -46,8 +46,9 @@ while true; do
     if ! pgrep -f "python3 ${SCRIPT_DIR}/main.py" > /dev/null; then
         echo "Bot process not found at $(date). Restarting..." >> "${SCRIPT_DIR}/logs/watchdog.log"
         python3 "${SCRIPT_DIR}/main.py" > "${SCRIPT_DIR}/logs/bot_console.log" 2>&1 &
-        echo $! > "${SCRIPT_DIR}/bot.pid"
-        echo "Bot restarted with PID $(cat ${SCRIPT_DIR}/bot.pid) at $(date)" >> "${SCRIPT_DIR}/logs/watchdog.log"
+        BOT_NEW_PID=$!
+        echo $BOT_NEW_PID > "${SCRIPT_DIR}/bot.pid"
+        echo "Bot restarted with PID $BOT_NEW_PID at $(date)" >> "${SCRIPT_DIR}/logs/watchdog.log"
         RESTART_COUNT=$((RESTART_COUNT + 1))
     fi
     
@@ -61,16 +62,41 @@ chmod +x "${SCRIPT_DIR}/watchdog.sh"
 echo -e "${GREEN}Starting trading bot...${NC}"
 echo -e "${YELLOW}Bot will run in the background with watchdog monitoring.${NC}"
 
-nohup python3 "${SCRIPT_DIR}/main.py" > "${SCRIPT_DIR}/logs/bot_console.log" 2>&1 &
+# Make sure any existing watchdog process is stopped
+if [ -f "${SCRIPT_DIR}/watchdog.pid" ]; then
+    OLD_WATCHDOG_PID=$(cat "${SCRIPT_DIR}/watchdog.pid")
+    if ps -p $OLD_WATCHDOG_PID > /dev/null; then
+        echo -e "${YELLOW}Found existing watchdog process. Stopping it first...${NC}"
+        kill $OLD_WATCHDOG_PID 2>/dev/null || true
+    fi
+    rm "${SCRIPT_DIR}/watchdog.pid"
+fi
 
-# Save the PID to a file for later use
-echo $! > "${SCRIPT_DIR}/bot.pid"
-BOT_PID=$(cat "${SCRIPT_DIR}/bot.pid")
+# Start the main bot process
+nohup python3 "${SCRIPT_DIR}/main.py" > "${SCRIPT_DIR}/logs/bot_console.log" 2>&1 &
+BOT_PID=$!
+echo $BOT_PID > "${SCRIPT_DIR}/bot.pid"
+
+# Wait a moment to ensure the bot starts properly
+sleep 2
+
+# Verify the bot is running
+if ! ps -p $BOT_PID > /dev/null; then
+    echo -e "${RED}Bot failed to start properly. Check logs for errors.${NC}"
+    exit 1
+fi
 
 # Start the watchdog in the background
+echo -e "${GREEN}Starting watchdog service...${NC}"
 nohup "${SCRIPT_DIR}/watchdog.sh" > "${SCRIPT_DIR}/logs/watchdog_console.log" 2>&1 &
 WATCHDOG_PID=$!
 echo $WATCHDOG_PID > "${SCRIPT_DIR}/watchdog.pid"
+
+# Verify the watchdog is running
+if ! ps -p $WATCHDOG_PID > /dev/null; then
+    echo -e "${RED}Watchdog failed to start properly. The bot is running but without watchdog protection.${NC}"
+    exit 1
+fi
 
 echo -e "${GREEN}Bot started with PID ${BOT_PID}${NC}"
 echo -e "${GREEN}Watchdog started with PID ${WATCHDOG_PID}${NC}"

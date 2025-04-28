@@ -87,7 +87,7 @@ mkdir -p "${BOT_DIR}/backups"
 # Ensure TA-Lib is properly installed with no-cache-dir option
 print_message "📊 Installing TA-Lib specifically with no-cache-dir option..."
 if python3 -c "import talib" &>/dev/null; then
-    print_message "TA-Lib is already installed." "$YELLOW"
+    print_message "✅ TA-Lib is already installed." "$GREEN"
 else
     print_message "TA-Lib not found. Installing TA-Lib..." "$YELLOW"
     
@@ -112,17 +112,9 @@ else
     
     # Verify installation
     if ! python3 -c "import talib" &>/dev/null; then
-        # Try to fallback to the ta package if talib fails
-        print_message "❌ TA-Lib installation failed. Trying to install alternative 'ta' package..." "$YELLOW"
-        sudo pip3 install --no-cache-dir ta
-        
-        if python3 -c "import ta" &>/dev/null; then
-            print_message "✅ Alternative 'ta' package installed successfully." "$GREEN"
-            print_message "⚠️  Note: You may need to modify your code to use 'ta' instead of 'talib'." "$YELLOW"
-        else
-            print_message "❌ All TA library installation attempts failed. Please check the error messages." "$RED"
-            exit 1
-        fi
+        print_message "❌ TA-Lib installation failed. Please check the install_talib.sh script for errors." "$RED"
+        print_message "Try running install_talib.sh manually and then run this setup script again." "$YELLOW"
+        exit 1
     else
         print_message "✅ TA-Lib installed successfully." "$GREEN"
     fi
@@ -132,15 +124,9 @@ fi
 print_message "📚 Installing Python dependencies globally..."
 sudo pip3 install --upgrade pip
 
-# Create a temp requirements file without ta-lib
-grep -v "ta-lib" "${BOT_DIR}/requirements.txt" > "${BOT_DIR}/temp_requirements.txt"
-
-# Install other packages with no-cache-dir
+# Install packages with no-cache-dir
 print_message "Installing packages from requirements.txt with no-cache-dir..."
-sudo pip3 install --no-cache-dir -r "${BOT_DIR}/temp_requirements.txt"
-
-# Clean up
-rm -f "${BOT_DIR}/temp_requirements.txt"
+sudo pip3 install --no-cache-dir -r "${BOT_DIR}/requirements.txt"
 
 # Add extra packages for reliability and monitoring
 print_message "🔍 Installing additional packages for monitoring and reliability..."
